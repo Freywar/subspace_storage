@@ -1,11 +1,15 @@
 CRAFTING_FLUID_CATEGORY_NAME = "crafting-fluids"
 
+CHUNK_SIZE = 32
+
 --item name that electricity uses
 ELECTRICITY_ITEM_NAME = "electricity"
 ELECTRICITY_RATIO = 1000000 -- 1.000.000,  1 = 1MJ
 
-INV_COMBINATOR_NAME = "subspace-resource-combinator"
+STORAGE_COMBINATOR_NAME = "subspace-storage-combinator"
 
 MAX_FLUID_AMOUNT = 25000
 TICKS_TO_COLLECT_REQUESTS = 40
 TICKS_TO_FULFILL_REQUESTS = 20
+
+TICKS_BEFORE_RETURN = 60 * 60 

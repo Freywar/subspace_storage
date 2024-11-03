@@ -3,7 +3,6 @@ require("config")
 
 require("prototypes/entities")
 
-
 --adds a recipe to a tech and returns true or if that fails returns false
 function AddEntityToTech(techName, name)
 	--can't add the recipe to the tech if it doesn't exist
@@ -26,25 +25,25 @@ end
 
 -- Do some magic nice stuffs
 data:extend(
-{
 	{
-		type = "item-subgroup",
-		name = "subspace_storage-interactor",
-		group = "logistics",
-		order = "g-subspace_storage", -- After logistic-network
-	},
-})
+		{
+			type = "item-subgroup",
+			name = "subspace_storage-interactor",
+			group = "logistics",
+			order = "g-subspace_storage", -- After logistic-network
+		},
+	})
 
 data:extend(
-{
 	{
-		type = "recipe-category",
-		name = CRAFTING_FLUID_CATEGORY_NAME
-	}
-})
+		{
+			type = "recipe-category",
+			name = CRAFTING_FLUID_CATEGORY_NAME
+		}
+	})
 
 -- Virtual signals
-data:extend{
+data:extend {
 	{
 		type = "item-subgroup",
 		name = "virtual-signal-clusterio",
@@ -78,58 +77,57 @@ data:extend{
 }
 
 -- Inventory Combinator
-local inv = table.deepcopy(data.raw["constant-combinator"]["constant-combinator"])
+local storage_combinator = table.deepcopy(data.raw["constant-combinator"]["constant-combinator"])
 local tint = { r = 100, g = 200, b = 255, a = 255 }
-inv.name = INV_COMBINATOR_NAME
-inv.minable.result = INV_COMBINATOR_NAME
-inv.item_slot_count = 2000
-for _, sprite in pairs(inv.sprites) do
+storage_combinator.name = STORAGE_COMBINATOR_NAME
+storage_combinator.minable.result = STORAGE_COMBINATOR_NAME
+storage_combinator.item_slot_count = 2000
+for _, sprite in pairs(storage_combinator.sprites) do
 	sprite.layers[1].tint = tint
 	sprite.layers[1].hr_version.tint = tint
 end
-data:extend{
-	inv,
+data:extend {
+	storage_combinator,
 	{
 		type = "item",
-		name = INV_COMBINATOR_NAME,
+		name = STORAGE_COMBINATOR_NAME,
 		icons = {
 			{
-				icon = inv.icon,
+				icon = storage_combinator.icon,
 				tint = tint,
 			}
 		},
-		icon_size = inv.icon_size,
+		icon_size = storage_combinator.icon_size,
 		flags = {},
 		subgroup = "subspace_storage-interactor",
-		place_result=INV_COMBINATOR_NAME,
-		order = "c[" .. INV_COMBINATOR_NAME .. "]",
+		place_result = STORAGE_COMBINATOR_NAME,
+		order = "c[" .. STORAGE_COMBINATOR_NAME .. "]",
 		stack_size = 50,
 	},
 	{
 		type = "recipe",
-		name = INV_COMBINATOR_NAME,
+		name = STORAGE_COMBINATOR_NAME,
 		enabled = true, -- TODO do this on a tech somewhere
 		ingredients =
 		{
-			{"constant-combinator", 1},
-			{"electronic-circuit", 50}
+			{ "constant-combinator", 1 },
+			{ "electronic-circuit",  50 }
 		},
-		result = INV_COMBINATOR_NAME,
+		result = STORAGE_COMBINATOR_NAME,
 		requester_paste_multiplier = 1
 	},
 }
 
 data:extend(
-        {
-            {
-                type = "sprite",
-                name = "clusterio",
-                filename = "__subspace_storage__/graphics/icons/clusterio.png",
-                priority = "medium",
-                width = 128,
-                height = 128,
-                flags = { "icon" }
-            }
-
-        }
+	{
+		{
+			type = "sprite",
+			name = "clusterio",
+			filename = "__subspace_storage__/graphics/icons/clusterio.png",
+			priority = "medium",
+			width = 128,
+			height = 128,
+			flags = { "icon" }
+		}
+	}
 )
