@@ -31,14 +31,15 @@ local function queue()
 end
 
 local function queue_ipairs(queue, portion)
-	local i = queue.ci
-	queue.ci = math.min(queue.ci + math.ceil(#queue * (portion or 1)), #queue)
+	local ci = queue.ci - 1
+	local ei = math.min(ci + math.ceil(#queue * (portion or 1)), #queue)
 	return function()
-		if i >= queue.ci then
+		ci = ci + 1
+		queue.ci = ci
+		if ci > ei then
 			return nil, nil
 		end
-		i = i + 1
-		return i, queue[i]
+		return ci, queue[ci]
 	end
 end
 
@@ -57,7 +58,10 @@ local function set(storage, force, cx, cy, name, data)
 	storage[force] = storage[force] or {}
 	storage[force][cx] = storage[force][cx] or {}
 	storage[force][cx][cy] = storage[force][cx][cy] or {}
-	storage[force][cx][cy][name] = data or nil
+	storage[force][cx][cy][name] = data
+	if storage[force][cx][cy][name] == storage["__default__"] then
+		storage[force][cx][cy][name] = nil
+	end
 	if not next(storage[force][cx][cy]) then
 		storage[force][cx][cy] = nil
 	end
@@ -111,8 +115,7 @@ local function entries(storage)
 		if i > #entries then
 			return nil, nil, nil, nil, nil
 		end
-		local entry = entries[i]
-		return entry[1], entry[2], entry[3], entry[4], entry[5]
+		return entries[i][1], entries[i][2], entries[i][3], entries[i][4], entries[i][5]
 	end
 end
 
@@ -225,15 +228,8 @@ local function Init()
 	global.inbox = storage(0)
 
 	global.local_storage = global.local_storage or storage()
-	for force, cx, cy, name, entry in entries(global.local_storage) do
-		if not entry.remaining then
-			set(global.local_storage, force, cx, cy, name, nil)
-		else
-			entry.initial = entry.initial or entry.remaining
-			entry.accessed = entry.accessed or game.tick
-		end
-	end
-	global.local_requests = {
+	global.local_requests = storage()
+	global.local_request_queues = {
 		["subspace-item-extractor"] = queue(),
 		["subspace-fluid-extractor"] = queue(),
 		["subspace-electricity-extractor"] = queue()
@@ -260,7 +256,7 @@ script.on_configuration_changed(function(data)
 	end
 end)
 
-script.on_event(defines.events.on_tick, function(event)
+script.on_event(defines.events.on_tick, function()
 	global.ticksSinceMasterPinged = global.ticksSinceMasterPinged + 1
 
 	--If the mod isn't connected then still pretend that it's
@@ -279,45 +275,21 @@ script.on_event(defines.events.on_tick, function(event)
 
 		if global.tick < TICKS_TO_COLLECT_REQUESTS then
 			if global.tick == 0 then
-				for _, entities in global.entities do
-					reset_queue(entities)
-				end
+				EnqueueEntities()
 			end
-			CollectInjectorsContent(1 / (TICKS_TO_COLLECT_REQUESTS + TICKS_TO_FULFILL_REQUESTS))
+			CollectInjectorsItems(1 / (TICKS_TO_COLLECT_REQUESTS + TICKS_TO_FULFILL_REQUESTS))
 
 			if global.tick == 0 then
-				global.local_requests = {
-					["subspace-item-extractor"] = queue(),
-					["subspace-fluid-extractor"] = queue(),
-					["subspace-electricity-extractor"] = queue()
-				}
+				global.local_requests = storage()
 			end
 			CollectExtractorsRequests(1 / TICKS_TO_COLLECT_REQUESTS)
 		elseif global.tick < TICKS_TO_COLLECT_REQUESTS + TICKS_TO_FULFILL_REQUESTS then
-			CollectInjectorsContent(1 / (TICKS_TO_COLLECT_REQUESTS + TICKS_TO_FULFILL_REQUESTS))
+			CollectInjectorsItems(1 / (TICKS_TO_COLLECT_REQUESTS + TICKS_TO_FULFILL_REQUESTS))
 
 			if global.tick == TICKS_TO_COLLECT_REQUESTS then
-				for force, cx, cy, name, count in entries(global.inbox) do
-					local e = get(global.local_storage, force, cx, cy, name) or {
-						initial = 0,
-						remaining = 0,
-						accessed = game.tick,
-					}
-					e.initial = e.remaining + count
-					e.remaining = e.remaining + count
-					set(global.local_storage, force, cx, cy, name, e)
-				end
-				global.inbox = storage(0)
-
-				-- To be able to distribute it fairly, the requesters need to be sorted in order of how
-				-- much they are missing, so the requester with the least missing of the item will be first.
-				-- If this isn't done then there could be items leftover after they have been distributed
-				-- even though they could all have been distributed if they had been distributed in order.
-				table.sort(global.local_requests["subspace-item-extractor"],
-					function(l, r) return l.name == r.name and l.count < r.count end)
+				ProcessItems()
 			end
 			FulfillExtractorsRequests(1 / TICKS_TO_FULFILL_REQUESTS)
-			global.tick = global.tick + 1
 		elseif global.tick == TICKS_TO_COLLECT_REQUESTS + TICKS_TO_FULFILL_REQUESTS then
 			SendItems()
 		else
@@ -340,9 +312,9 @@ script.on_nth_tick(TICKS_BEFORE_RETURN, function()
 	end
 
 	for force, cx, cy, name, entry in entries(global.local_storage) do
-		if entry.accessed < game.tick - TICKS_BEFORE_RETURN and entry.remaining then
-			set(global.outbox, force, cx, cy, name, entry.remaining)
-			entry.remaining = 0
+		if entry.accessed < game.tick - TICKS_BEFORE_RETURN then
+			set(global.outbox, force, cx, cy, name, entry.count)
+			set(global.local_storage, force, cx, cy, name, nil)
 		end
 	end
 end)
@@ -350,12 +322,30 @@ end)
 ------------------------------------------
 -- [[Getter and setter update methods]] --
 ------------------------------------------
-local function CollectItemInjectorContent(entity)
+function EnqueueEntities()
+	for _, entities in global.entities do
+		reset_queue(entities)
+	end
+end
+
+local function CollectItems(entity, name, count, limit)
+	if not entity.valid or count <= 0 then
+		return 0
+	end
+
+	local position = relative(entity.surface, entity.force, entity.position)
+	if limit <= 0 or get(global.global_storage, entity.force.name, position.x, position.y, name) < limit then
+		update(global.outbox, entity.force.name, position.x, position.y, name, function(c) return c + count end)
+		return count
+	end
+	return 0
+end
+
+local function CollectItemInjectorItems(entity)
 	if not entity.valid then
 		return
 	end
 
-	local position = relative(entity.surface, entity.force, entity.position)
 	local inventory = entity.get_inventory(defines.inventory.chest)
 
 	if settings.global["subspace_storage-infinity-mode"].value then
@@ -363,22 +353,19 @@ local function CollectItemInjectorContent(entity)
 		return
 	end
 
-	local limit = settings.global["subspace_storage-max-items"].value
 	for name, count in pairs(inventory.get_contents()) do
-		if limit <= 0 or (get(global.global_storage, entity.force.name, position.x, position.y, name) or 0) < limit then
-			update(global.outbox, entity.force.name, position.x, position.y, name,
-				function(c) return (c or 0) + count end)
-			inventory.remove({ name = name, count = count })
-		end
+		inventory.remove({
+			name = name,
+			count = CollectItems(entity, name, count, settings.global["subspace_storage-max-items"].value)
+		})
 	end
 end
 
-local function CollectFluidInjectorContent(entity)
+local function CollectFluidInjectorItems(entity)
 	if not entity.valid then
 		return
 	end
 
-	local position = relative(entity.surface, entity.force, entity.position)
 	local fluidbox = entity.fluidbox
 	local fluid    = fluidbox[1]
 
@@ -398,22 +385,20 @@ local function CollectFluidInjectorContent(entity)
 		return
 	end
 
-	local limit = settings.global["subspace_storage-max-fluid"].value
-	if limit <= 0 or (get(global.global_storage, entity.force.name, position.x, position.y, fluid.name) or 0) < limit then
-		local count = math.ceil(fluid.amount) - 1
-		update(global.outbox, entity.force.name, position.x, position.y, fluid.name,
-			function(c) return (c or 0) + count end)
-		fluid.amount = fluid.amount - count
-		fluidbox[1] = fluid
-	end
+	fluid.amount = fluid.amount - CollectItems(
+		entity,
+		fluid.name,
+		math.ceil(fluid.amount) - 1,
+		settings.global["subspace_storage-max-fluid"].value
+	)
+	fluidbox[1] = fluid
 end
 
-local function CollectElectricityInjectorContent(entity)
+local function CollectElectricityInjectorItems(entity)
 	if not entity.valid then
 		return
 	end
 
-	local position = relative(entity.surface, entity.force, entity.position)
 	local energy = math.floor(entity.energy / ELECTRICITY_RATIO)
 	if energy <= 0 then
 		return
@@ -424,24 +409,38 @@ local function CollectElectricityInjectorContent(entity)
 		return
 	end
 
-	local limit = settings.global["subspace_storage-max-electricity"].value
-	if limit <= 0 or (get(global.global_storage, entity.force.name, position.x, position.y, ELECTRICITY_ITEM_NAME) or 0) < limit then
-		update(global.outbox, entity.force.name, position.x, position.y, ELECTRICITY_ITEM_NAME,
-			function(c) return (c or 0) + energy end)
-		entity.energy = entity.energy - (energy * ELECTRICITY_RATIO)
+	entity.energy = entity.energy - ELECTRICITY_RATIO * CollectItems(
+		entity,
+		ELECTRICITY_ITEM_NAME,
+		energy,
+		settings.global["subspace_storage-max-electricity"].value
+	)
+end
+
+function CollectInjectorsItems(portion)
+	for _, entity in queue_ipairs(global.entities["subspace-item-injector"], portion) do
+		CollectItemInjectorItems(entity)
+	end
+	for _, entity in queue_ipairs(global.entities["subspace-fluid-injector"], portion) do
+		CollectFluidInjectorItems(entity)
+	end
+	for _, entity in queue_ipairs(global.entities["subspace-electricity-injector"], portion) do
+		CollectElectricityInjectorItems(entity)
 	end
 end
 
-function CollectInjectorsContent(portion)
-	for _, entity in queue_ipairs(global.entities["subspace-item-injector"], portion) do
-		CollectItemInjectorContent(entity)
+local function CollectRequest(entity, name, count)
+	if not entity.valid or entity.to_be_deconstructed(entity.force) or count <= 0 then
+		return
 	end
-	for _, entity in queue_ipairs(global.entities["subspace-fluid-injector"], portion) do
-		CollectFluidInjectorContent(entity)
-	end
-	for _, entity in queue_ipairs(global.entities["subspace-electricity-injector"], portion) do
-		CollectElectricityInjectorContent(entity)
-	end
+
+	local position = relative(entity.surface, entity.force, entity.position)
+	update(global.local_requests, entity.force.name, position.x, position.y, name, function(request)
+		request = request or { count = 0, subrequests = {} }
+		request.count = request.count + count
+		table.insert(request.subrequests, { entity = entity, count = count })
+		return request
+	end)
 end
 
 local function CollectItemExtractorRequests(entity)
@@ -456,17 +455,17 @@ local function CollectItemExtractorRequests(entity)
 		local request = entity.get_request_slot(i)
 		if request then
 			local stack = game.item_prototypes[request.name].stack_size
-			local required = math.min(request.count - inventory.get_item_count(request.name), freeStacks * stack)
-			if required > 0 then
-				freeStacks = freeStacks - math.ceil(required / stack)
-				table.insert(global.local_requests, { entity = entity, name = request.name, count = required })
+			local count = math.min(request.count - inventory.get_item_count(request.name), freeStacks * stack)
+			if count > 0 then
+				freeStacks = freeStacks - math.ceil(count / stack)
+				CollectRequest(entity, request.name, count)
 			end
 		end
 	end
 end
 
 local function CollectFluidExtractorRequests(entity)
-	if not entity.valid then
+	if not entity.valid or entity.to_be_deconstructed(entity.force) then
 		return
 	end
 
@@ -479,22 +478,17 @@ local function CollectFluidExtractorRequests(entity)
 			fluid = { name = request.products[1].name, amount = 0 }
 		end
 
-		local required = math.ceil(MAX_FLUID_AMOUNT - fluid.amount)
-		if required > 0 then
-			table.insert(global.local_requests, { entity = entity, name = fluid.name, count = required })
-		end
+		CollectRequest(entity, fluid.name, math.ceil(MAX_FLUID_AMOUNT - fluid.amount))
 	end
 end
 
 local function CollectElectricityExtractorRequests(entity)
-	if not entity.valid then
+	if not entity.valid or entity.to_be_deconstructed(entity.force) then
 		return
 	end
 
-	local required = math.floor((entity.electric_buffer_size - entity.energy) / ELECTRICITY_RATIO)
-	if required > 0 then
-		table.insert(global.local_requests, { entity = entity, name = ELECTRICITY_ITEM_NAME, count = required })
-	end
+	CollectRequest(entity, ELECTRICITY_ITEM_NAME,
+		math.floor((entity.electric_buffer_size - entity.energy) / ELECTRICITY_RATIO))
 end
 
 function CollectExtractorsRequests(portion)
@@ -512,14 +506,14 @@ function CollectExtractorsRequests(portion)
 end
 
 local function InsertIntoItemExtractor(entity, name, count)
-	if not entity.valid then
+	if not entity.valid or entity.to_be_deconstructed(entity.force) or count <= 0 then
 		return 0
 	end
 	return entity.get_inventory(defines.inventory.chest).insert { name = name, count = count }
 end
 
 local function InsertIntoFluidExtractor(entity, name, count)
-	if not entity.valid then
+	if not entity.valid or entity.to_be_deconstructed(entity.force) or count <= 0 then
 		return 0
 	end
 
@@ -535,162 +529,86 @@ local function InsertIntoFluidExtractor(entity, name, count)
 end
 
 local function InsertIntoElectricityExtractor(entity, _, count)
-	if not entity.valid then
+	if not entity.valid or entity.to_be_deconstructed(entity.force) or count <= 0 then
 		return 0
 	end
 	entity.energy = entity.energy + count * ELECTRICITY_RATIO
 	return count
 end
 
-local function FulfillRequest(requests, request, insert)
-	-- TODO Gather the sums while requests are collected.
-	local total_count = 0
-	for _, r in ipairs(requests) do
-		if r.name == request.name then
-			total_count = total_count + r.count
+function EnqueueExtractorRequests()
+	global.local_request_queues = {
+		["subspace-item-extractor"] = queue(),
+		["subspace-fluid-extractor"] = queue(),
+		["subspace-electricity-extractor"] = queue()
+	}
+	for force, cx, cy, name, request in entries(global.local_requests) do
+		table.insert(global.local_requests_queue[request.subrequests[1].entity.name], {
+			force = force,
+			cx = cx,
+			cy = cy,
+			name = name,
+			count = request.count,
+			subrequests = request.subrequests
+		})
+
+		if request.subrequests[1].entity.name == "subspace-item-extractor" then
+			-- To be able to distribute it fairly, the requesters need to be sorted in order of how
+			-- much they are missing, so the requester with the least missing of the item will be first.
+			-- If this isn't done then there could be items leftover after they have been distributed
+			-- even though they could all have been distributed if they had been distributed in order.
+			table.sort(request.subrequests, function(l, r) return l.count < r.count end)
 		end
 	end
+	global.local_requests = storage()
+end
 
-	local entity = request.entity
-	local position = relative(entity.surface, entity.force, entity.position)
-
-	local count = 0
+local function FulfillRequest(request, insert)
+	local entry
 	if settings.global["subspace_storage-infinity-mode"].value then
-		count = total_count
+		entry = { count = request.count }
 	else
-		local entry = get(global.local_storage, entity.force.name, position.x, position.y, request.name);
-		if not entry then
-			count = 0
-		else
-			count = math.min(entry.remaining, total_count)
-			entry.remaining = entry.remaining - count
-			entry.accessed = game.tick
-		end
+		entry = get(global.local_storage, request.force, request.cx, request.cy, request.name) or { count = 0 };
+	end
+	entry.accessed = game.tick
+
+	local available = math.min(entry.remaining, request.count)
+	local remaining = available
+	for _, subrequest in ipairs(request.subrequests) do
+		remaining = remaining - insert(
+			subrequest.entity,
+			request.name,
+			math.min(math.max(1, math.floor(available * subrequest.count / request.count)), remaining))
 	end
 
-	--need to scale all the requests according to how much of the requested items are available.
-	--Can't be more than 100% because otherwise the chests will overfill
-	function GetInitialItemCount(itemName)
-		--this method is used so the mod knows hopw to distribute
-		--the items between all entities. If infinite resources is enabled
-		--then all entities should get their requests fulfilled-
-		--To simulate that this method returns 1mil which should be enough
-		--for all entities to fulfill their whole item request
-		if settings.global["subspace_storage-infinity-mode"].value then
-			return 1000000 --1.000.000
-		end
-
-		if global.local_storage[itemName] == nil then
-			return 0
-		end
-		return global.local_storage[itemName].initialItemCount
+	local taken = available - remaining
+	if taken < request.count then
+		update(global.global_requests, request.force, request.cx, request.cy, request.name, function(c)
+			return c + request.count - taken
+		end)
 	end
-
-	local available = GetInitialItemCount(request.name)
-
-	local avaiableItemsRatio = math.min(available / total_count, 1)
-	--Floor is used here so no chest uses more than its fair share.
-	--If they used more then the last entity would bet less which would be
-	--an issue with +1000 entities requesting items.
-	local chestHold = math.floor(request.count * avaiableItemsRatio)
-	--If there is less items than requests then floor will return zero and thus not
-	--distributes the remaining items. Thus here the mining is set to 1 but still
-	--it can't be set to 1 if there is no more items to distribute, which is what
-	--the last min corresponds to.
-	chestHold = math.max(chestHold, 1)
-	chestHold = math.min(chestHold, count)
-
-	--If there wasn't enough items to fulfill the whole request
-	--then ask for more items from outside the game
-	local missingItems = request.count - chestHold
-	if missingItems > 0 then
-		set(global.global_requests, force, x, y, request.itemName, missingItems)
+	if taken < entry.count then
+		update(global.outbox, request.force, request.cx, request.cy, request.name, function(c)
+			return c + entry.count - taken
+		end)
 	end
-
-	if count > 0 then
-		--No need to insert 0 of something
-		if chestHold > 0 then
-			local insertedItemsCount = insert(request, request.itemName, chestHold)
-			count = count - insertedItemsCount
-		end
-
-		--In some cases it's possible for the entity to not use up
-		--all the items.
-		--In those cases the items should be put back into storage.
-		if count > 0 then
-			if global.local_storage[request.itemName] == nil then
-				global.local_storage[request.itemName] =
-				{
-					initialItemCount = 0,
-					remainingItems = 0,
-					lastPull = game.tick,
-				}
-			end
-			global.local_storage[request.itemName].remainingItems = global.local_storage[request.itemName].remainingItems +
-			count
-		end
-	end
+	set(global.local_storage, request.force, request.cx, request.cy, request.name, nil)
 end
 
 function FulfillExtractorsRequests(portion)
-	for _, request in queue_ipairs(global.local_requests["subspace-item-extractor"], portion) do
-		FulfillRequest(global.local_requests["subspace-item-extractor"], request, InsertIntoItemExtractor)
+	for _, request in queue_ipairs(global.local_request_queues["subspace-item-extractor"], portion) do
+		FulfillRequest(request, InsertIntoItemExtractor)
 	end
-	for _, request in queue_ipairs(global.local_requests["subspace-fluid-extractor"], portion) do
-		FulfillRequest(global.local_requests["subspace-fluid-extractor"], request, InsertIntoFluidExtractor)
+	for _, request in queue_ipairs(global.local_request_queues["subspace-fluid-extractor"], portion) do
+		FulfillRequest(request, InsertIntoFluidExtractor)
 	end
 	if math.fmod(global.iteration, ITERATIONS_TO_COLLECT_ELECTRICITY_REQUESTS) == 0 then
-		for _, request in queue_ipairs(global.local_requests["subspace-electricity-extractor"], portion) do
-			FulfillRequest(global.local_requests["subspace-electricity-extractor"], request, InsertIntoElectricityExtractor)
+		for _, request in queue_ipairs(global.local_request_queues["subspace-electricity-extractor"], portion) do
+			FulfillRequest(request, InsertIntoElectricityExtractor)
 		end
 	end
 end
 
-------------------------------------------
--- [[Methods that talk with Clusterio]] --
-------------------------------------------
-function ReceiveEndpoints(data)
-	local endpoints = game.json_to_table(data)
-	-- TODO
-end
-
-function SetStorage(data)
-	global.global_storage = parse(data)
-	UpdateStorageCombinators()
-end
-
-function UpdateStorage(data)
-	for _, item in ipairs(game.json_to_table(data)) do
-		set(global.global_storage, item[1], item[2], item[3], item[4], item[5])
-	end
-	UpdateStorageCombinators()
-end
-
-function SendItems()
-	if not next(global.outbox) then
-		return
-	end
-	clusterio_api.send_json("subspace_storage:send_items", serialize(global.outbox))
-	global.outbox = {}
-end
-
-function RequestItems()
-	if not next(global.global_requests) then
-		return
-	end
-	clusterio_api.send_json("subspace_storage:request_items", serialize(global.global_requests))
-	global.global_requests = {}
-end
-
-function ReceiveItems(data)
-	for _, item in ipairs(game.json_to_table(data)) do
-		update(global.inbox, item[1], item[2], item[3], item[4], function(c) return (c or 0) + item[5] end)
-	end
-end
-
----------------------------------
--- [[Update combinator methods]] --
----------------------------------
 function UpdateStorageCombinators()
 	-- Update all inventory Combinators
 	-- Prepare a frame from the last inventory report, plus any virtuals
@@ -729,9 +647,60 @@ function UpdateStorageCombinators()
 	end
 end
 
-----------------------
--- [[Endpoints UI]] --
-----------------------
+------------------------------------------
+-- [[Methods that talk with Clusterio]] --
+------------------------------------------
+function ReceiveEndpoints(data)
+	local endpoints = game.json_to_table(data)
+	-- TODO
+end
+
+function SetStorage(data)
+	global.global_storage = parse(data)
+	UpdateStorageCombinators()
+end
+
+function UpdateStorage(data)
+	for _, item in ipairs(game.json_to_table(data)) do
+		set(global.global_storage, item[1], item[2], item[3], item[4], item[5])
+	end
+	UpdateStorageCombinators()
+end
+
+function SendItems()
+	if not next(global.outbox) then
+		return
+	end
+	clusterio_api.send_json("subspace_storage:send_items", serialize(global.outbox))
+	global.outbox = {}
+end
+
+function RequestItems()
+	if not next(global.global_requests) then
+		return
+	end
+	clusterio_api.send_json("subspace_storage:request_items", serialize(global.global_requests))
+	global.global_requests = storage(0)
+end
+
+function ReceiveItems(data)
+	for _, item in ipairs(game.json_to_table(data)) do
+		update(global.inbox, item[1], item[2], item[3], item[4], function(c) return c + item[5] end)
+	end
+end
+
+function ProcessItems()
+	for force, cx, cy, name, count in entries(global.inbox) do
+		local e = get(global.local_storage, force, cx, cy, name) or { count = 0, accessed = game.tick }
+		e.count = e.count + count
+		set(global.local_storage, force, cx, cy, name, e)
+	end
+	global.inbox = storage(0)
+end
+
+------------
+-- [[UI]] --
+------------
 
 script.on_event(defines.events.on_player_cursor_stack_changed, function(event)
 	local player = game.players[event.player_index]
