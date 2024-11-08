@@ -15,6 +15,14 @@ local mod_entities = {
 	[STORAGE_COMBINATOR_NAME] = true,
 }
 
+local function absolute(surface, force, position)
+	local spawn = force.get_spawn_position(surface)
+	return {
+		x = (position.x + spawn.y // CHUNK_SIZE) * CHUNK_SIZE,
+		y = (position.y + spawn.x // CHUNK_SIZE) * CHUNK_SIZE
+	}
+end
+
 local function relative(surface, force, position)
 	local spawn = force.get_spawn_position(surface)
 	return {
@@ -122,7 +130,7 @@ end
 ------------------------
 -- [[Thing creation]] --
 ------------------------
-local function RegisterEntity(entity)
+local function RegisterEntity(entity, internal)
 	if not mod_entities[entity.name] then
 		return
 	end
@@ -134,16 +142,17 @@ local function RegisterEntity(entity)
 		table.insert(global.entities[entity.name], entity)
 	end
 
-	local position = relative(entity.surface, entity.force, entity.position)
-	clusterio_api.send_json("subspace_storage:broadcast_endpoints",
-		{ { entity.force.name, position.x, position.y, entity.name } })
+	if not internal then
+		local position = relative(entity.surface, entity.force, entity.position)
+		set(global.endpoints_outbox, entity.force.name, position.x, position.y, entity.name, true)
+	end
 end
 
 local function RegisterAll()
 	for _, surface in pairs(game.surfaces) do
 		for name, _ in pairs(mod_entities) do
 			for _, entity in pairs(surface.find_entities_filtered { name = name }) do
-				RegisterEntity(entity)
+				RegisterEntity(entity, true)
 			end
 		end
 	end
@@ -163,7 +172,7 @@ script.on_event(defines.events.on_robot_built_entity, OnEntityBuilt)
 -----------------------
 -- [[Thing removal]] --
 -----------------------
-local function UnregisterEntity(entity)
+local function UnregisterEntity(entity, internal)
 	if not mod_entities[entity.name] then
 		return
 	end
@@ -177,6 +186,11 @@ local function UnregisterEntity(entity)
 				break
 			end
 		end
+	end
+
+	if not internal then
+		local position = relative(entity.surface, entity.force, entity.position)
+		set(global.endpoints_outbox, entity.force.name, position.x, position.y, entity.name, false)
 	end
 end
 
@@ -204,12 +218,14 @@ end
 local function Init()
 	-- TODO Clean up.
 
-	global.ticksSinceMasterPinged = 601
-	global.isConnected = false
-	global.prevIsConnected = false
+	global.heartbeat_tick = 0
+	global.connected = false
 
 	global.iteration = 0
 	global.tick = 0
+
+	global.endpoints = storage()
+	global.endpoints_outbox = storage()
 
 	-- TODO It would probably be more optimal to spread the processing by forces and chunks rather than by entity type.
 	global.entities = {
@@ -221,15 +237,15 @@ local function Init()
 		["subspace-electricity-extractor"] = queue()
 	}
 
-	global.global_storage = global.global_storage or storage(0)
-	global.global_requests = storage(0)
+	global.shared_storage = global.shared_storage or storage(0)
+	global.own_storage = global.own_storage or storage()
 
-	global.outbox = storage(0)
-	global.inbox = storage(0)
+	global.items_outbox = storage(0)
+	global.items_reqbox = storage(0)
+	global.items_inbox = storage(0)
 
-	global.local_storage = global.local_storage or storage()
-	global.local_requests = storage()
-	global.local_request_queues = {
+	global.requests = storage()
+	global.request_queues = {
 		["subspace-item-extractor"] = queue(),
 		["subspace-fluid-extractor"] = queue(),
 		["subspace-electricity-extractor"] = queue()
@@ -257,21 +273,14 @@ script.on_configuration_changed(function(data)
 end)
 
 script.on_event(defines.events.on_tick, function()
-	global.ticksSinceMasterPinged = global.ticksSinceMasterPinged + 1
+	local connected =
+			settings.global["subspace_storage-infinity-mode"].value
+			or game.tick - global.heartbeat_tick < 300
 
-	--If the mod isn't connected then still pretend that it's
-	--so items requests and removals can be fulfilled
-	if settings.global["subspace_storage-infinity-mode"].value then
-		global.ticksSinceMasterPinged = 0
-	end
-
-	if global.ticksSinceMasterPinged < 300 then
-		global.isConnected = true
-
-		if global.prevIsConnected == false then
+	if connected then
+		if not global.connected then
 			global.tick = 0
 		end
-
 
 		if global.tick < TICKS_TO_COLLECT_REQUESTS then
 			if global.tick == 0 then
@@ -280,30 +289,27 @@ script.on_event(defines.events.on_tick, function()
 			CollectInjectorsItems(1 / (TICKS_TO_COLLECT_REQUESTS + TICKS_TO_FULFILL_REQUESTS))
 
 			if global.tick == 0 then
-				global.local_requests = storage()
+				global.requests = storage()
 			end
 			CollectExtractorsRequests(1 / TICKS_TO_COLLECT_REQUESTS)
 		elseif global.tick < TICKS_TO_COLLECT_REQUESTS + TICKS_TO_FULFILL_REQUESTS then
 			CollectInjectorsItems(1 / (TICKS_TO_COLLECT_REQUESTS + TICKS_TO_FULFILL_REQUESTS))
 
 			if global.tick == TICKS_TO_COLLECT_REQUESTS then
-				ProcessItems()
+				ProcessTransfer()
 			end
 			FulfillExtractorsRequests(1 / TICKS_TO_FULFILL_REQUESTS)
 		elseif global.tick == TICKS_TO_COLLECT_REQUESTS + TICKS_TO_FULFILL_REQUESTS then
-			SendItems()
-		else
-			RequestItems()
+			SendTransfer()
 
 			global.iteration = global.iteration + 1
 			global.tick = -1
 		end
 
 		global.tick = global.tick + 1
-	else
-		global.isConnected = false
 	end
-	global.prevIsConnected = global.isConnected
+
+	global.connected = connected
 end)
 
 script.on_nth_tick(TICKS_BEFORE_RETURN, function()
@@ -311,10 +317,10 @@ script.on_nth_tick(TICKS_BEFORE_RETURN, function()
 		return
 	end
 
-	for force, cx, cy, name, entry in entries(global.local_storage) do
+	for force, cx, cy, name, entry in entries(global.own_storage) do
 		if entry.accessed < game.tick - TICKS_BEFORE_RETURN then
-			set(global.outbox, force, cx, cy, name, entry.count)
-			set(global.local_storage, force, cx, cy, name, nil)
+			update(global.items_outbox, force, cx, cy, name, function(c) return c + entry.count end)
+			set(global.own_storage, force, cx, cy, name, nil)
 		end
 	end
 end)
@@ -334,8 +340,8 @@ local function CollectItems(entity, name, count, limit)
 	end
 
 	local position = relative(entity.surface, entity.force, entity.position)
-	if limit <= 0 or get(global.global_storage, entity.force.name, position.x, position.y, name) < limit then
-		update(global.outbox, entity.force.name, position.x, position.y, name, function(c) return c + count end)
+	if limit <= 0 or get(global.shared_storage, entity.force.name, position.x, position.y, name) < limit then
+		update(global.items_outbox, entity.force.name, position.x, position.y, name, function(c) return c + count end)
 		return count
 	end
 	return 0
@@ -435,7 +441,7 @@ local function CollectRequest(entity, name, count)
 	end
 
 	local position = relative(entity.surface, entity.force, entity.position)
-	update(global.local_requests, entity.force.name, position.x, position.y, name, function(request)
+	update(global.requests, entity.force.name, position.x, position.y, name, function(request)
 		request = request or { count = 0, subrequests = {} }
 		request.count = request.count + count
 		table.insert(request.subrequests, { entity = entity, count = count })
@@ -537,12 +543,12 @@ local function InsertIntoElectricityExtractor(entity, _, count)
 end
 
 function EnqueueExtractorRequests()
-	global.local_request_queues = {
+	global.request_queues = {
 		["subspace-item-extractor"] = queue(),
 		["subspace-fluid-extractor"] = queue(),
 		["subspace-electricity-extractor"] = queue()
 	}
-	for force, cx, cy, name, request in entries(global.local_requests) do
+	for force, cx, cy, name, request in entries(global.requests) do
 		table.insert(global.local_requests_queue[request.subrequests[1].entity.name], {
 			force = force,
 			cx = cx,
@@ -560,7 +566,7 @@ function EnqueueExtractorRequests()
 			table.sort(request.subrequests, function(l, r) return l.count < r.count end)
 		end
 	end
-	global.local_requests = storage()
+	global.requests = storage()
 end
 
 local function FulfillRequest(request, insert)
@@ -568,11 +574,11 @@ local function FulfillRequest(request, insert)
 	if settings.global["subspace_storage-infinity-mode"].value then
 		entry = { count = request.count }
 	else
-		entry = get(global.local_storage, request.force, request.cx, request.cy, request.name) or { count = 0 };
+		entry = get(global.own_storage, request.force, request.cx, request.cy, request.name) or { count = 0 };
 	end
 	entry.accessed = game.tick
 
-	local available = math.min(entry.remaining, request.count)
+	local available = math.min(entry.count, request.count)
 	local remaining = available
 	for _, subrequest in ipairs(request.subrequests) do
 		remaining = remaining - insert(
@@ -581,29 +587,30 @@ local function FulfillRequest(request, insert)
 			math.min(math.max(1, math.floor(available * subrequest.count / request.count)), remaining))
 	end
 
+	-- TODO Pull items straight from outbox without a roundtrip.
 	local taken = available - remaining
 	if taken < request.count then
-		update(global.global_requests, request.force, request.cx, request.cy, request.name, function(c)
-			return c + request.count - taken
+		update(global.items_reqbox, request.force, request.cx, request.cy, request.name, function(c)
+			return c - (request.count - taken)
 		end)
 	end
 	if taken < entry.count then
-		update(global.outbox, request.force, request.cx, request.cy, request.name, function(c)
-			return c + entry.count - taken
+		update(global.items_outbox, request.force, request.cx, request.cy, request.name, function(c)
+			return c + (entry.count - taken)
 		end)
 	end
-	set(global.local_storage, request.force, request.cx, request.cy, request.name, nil)
+	set(global.own_storage, request.force, request.cx, request.cy, request.name, nil)
 end
 
 function FulfillExtractorsRequests(portion)
-	for _, request in queue_ipairs(global.local_request_queues["subspace-item-extractor"], portion) do
+	for _, request in queue_ipairs(global.request_queues["subspace-item-extractor"], portion) do
 		FulfillRequest(request, InsertIntoItemExtractor)
 	end
-	for _, request in queue_ipairs(global.local_request_queues["subspace-fluid-extractor"], portion) do
+	for _, request in queue_ipairs(global.request_queues["subspace-fluid-extractor"], portion) do
 		FulfillRequest(request, InsertIntoFluidExtractor)
 	end
 	if math.fmod(global.iteration, ITERATIONS_TO_COLLECT_ELECTRICITY_REQUESTS) == 0 then
-		for _, request in queue_ipairs(global.local_request_queues["subspace-electricity-extractor"], portion) do
+		for _, request in queue_ipairs(global.request_queues["subspace-electricity-extractor"], portion) do
 			FulfillRequest(request, InsertIntoElectricityExtractor)
 		end
 	end
@@ -625,8 +632,8 @@ function UpdateStorageCombinators()
 	local items = game.item_prototypes
 	local fluids = game.fluid_prototypes
 	local virtuals = game.virtual_signal_prototypes
-	if global.global_storage then
-		for name, count in pairs(global.global_storage) do
+	if global.shared_storage then
+		for name, count in pairs(global.shared_storage) do
 			-- Combinator signals are limited to a max value of 2^31-1
 			count = math.min(count, 0x7fffffff)
 			if items[name] then
@@ -647,61 +654,9 @@ function UpdateStorageCombinators()
 	end
 end
 
-------------------------------------------
--- [[Methods that talk with Clusterio]] --
-------------------------------------------
-function ReceiveEndpoints(data)
-	local endpoints = game.json_to_table(data)
-	-- TODO
-end
-
-function SetStorage(data)
-	global.global_storage = parse(data)
-	UpdateStorageCombinators()
-end
-
-function UpdateStorage(data)
-	for _, item in ipairs(game.json_to_table(data)) do
-		set(global.global_storage, item[1], item[2], item[3], item[4], item[5])
-	end
-	UpdateStorageCombinators()
-end
-
-function SendItems()
-	if not next(global.outbox) then
-		return
-	end
-	clusterio_api.send_json("subspace_storage:send_items", serialize(global.outbox))
-	global.outbox = {}
-end
-
-function RequestItems()
-	if not next(global.global_requests) then
-		return
-	end
-	clusterio_api.send_json("subspace_storage:request_items", serialize(global.global_requests))
-	global.global_requests = storage(0)
-end
-
-function ReceiveItems(data)
-	for _, item in ipairs(game.json_to_table(data)) do
-		update(global.inbox, item[1], item[2], item[3], item[4], function(c) return c + item[5] end)
-	end
-end
-
-function ProcessItems()
-	for force, cx, cy, name, count in entries(global.inbox) do
-		local e = get(global.local_storage, force, cx, cy, name) or { count = 0, accessed = game.tick }
-		e.count = e.count + count
-		set(global.local_storage, force, cx, cy, name, e)
-	end
-	global.inbox = storage(0)
-end
-
 ------------
 -- [[UI]] --
 ------------
-
 script.on_event(defines.events.on_player_cursor_stack_changed, function(event)
 	local player = game.players[event.player_index]
 	if not player or not player.valid then
@@ -715,18 +670,82 @@ script.on_event(defines.events.on_player_cursor_stack_changed, function(event)
 			or ""
 
 	if mod_entities[entity] and not global.zones[player.name] then
-		global.zones[player.name] = rendering.draw_rectangle {
-			color = { r = 0.8, g = 0.1, b = 0 },
-			width = 12,
-			filled = false,
-			left_top = { sx - width / 2, sy - height / 2 },
-			right_bottom = { sx + width / 2, sy + height / 2 },
-			surface = player.surface,
-			players = { player },
-			draw_on_ground = true,
-		}
+		global.zones[player.name] = {}
+		for force, cx, cy, name, _ in entries(global.endpoints) do
+			if player.force.name == force then
+				local position = absolute(player.surface, player.force, { x = cx, y = cy })
+				table.insert(global.zones[player.name], rendering.draw_rectangle {
+					color = { r = 0.8, g = 0.1, b = 0 },
+					width = 12,
+					filled = false,
+					left_top = { position.x, position.y },
+					right_bottom = { position.x + CHUNK_SIZE, position.y + CHUNK_SIZE },
+					surface = player.surface,
+					players = { player },
+					draw_on_ground = true,
+				})
+			end
+		end
 	elseif not mod_entities[entity] and global.zones[player.name] then
-		rendering.destroy(global.zones[player.name])
+		for _, zone in ipairs(global.zones[player.name]) do
+			rendering.destroy(zone)
+		end
 		global.zones[player.name] = nil
 	end
 end)
+
+------------------------------------------
+-- [[Methods that talk with Clusterio]] --
+------------------------------------------
+function SetEndpoints(data)
+	global.endpoints = parse(data)
+end
+
+function UpdateEndpoints(data)
+	for _, endpoint in ipairs(game.json_to_table(data)) do
+		set(global.endpoints, endpoint[1], endpoint[2], endpoint[3], endpoint[4], endpoint[5])
+	end
+end
+
+function SendEndpoints()
+	clusterio_api.send_json("subspace_storage:update_endpoints", serialize(global.endpoints_outbox))
+	global.endpoints_outbox = storage()
+end
+
+function SetStorage(data)
+	global.shared_storage = parse(data)
+	UpdateStorageCombinators()
+end
+
+function UpdateStorage(data)
+	for _, item in ipairs(game.json_to_table(data)) do
+		set(global.shared_storage, item[1], item[2], item[3], item[4], item[5])
+	end
+	UpdateStorageCombinators()
+end
+
+function SendTransfer()
+	if next(global.items_outbox) then
+		clusterio_api.send_json("subspace_storage:transfer_items", serialize(global.items_outbox))
+		global.items_outbox = storage(0) -- TODO Confirm items received.
+	end
+	if next(global.items_reqbox) then
+		clusterio_api.send_json("subspace_storage:transfer_items", serialize(global.items_reqbox))
+		global.items_reqbox = storage(0)
+	end
+end
+
+function ReceiveTransfer(data)
+	for _, item in ipairs(game.json_to_table(data)) do
+		update(global.items_inbox, item[1], item[2], item[3], item[4], function(c) return c + item[5] end)
+	end
+end
+
+function ProcessTransfer()
+	for force, cx, cy, name, count in entries(global.items_inbox) do
+		local e = get(global.own_storage, force, cx, cy, name) or { count = 0, accessed = game.tick }
+		e.count = e.count + count
+		set(global.own_storage, force, cx, cy, name, e)
+	end
+	global.items_inbox = storage(0)
+end
