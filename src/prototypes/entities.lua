@@ -196,7 +196,7 @@ subspace_interactor_entity {
 		open_sound = storage_tank.open_sound,
 		close_sound = storage_tank.close_sound,
 		animation = pictures["subspace-fluid-extractor"],
-		crafting_categories = {CRAFTING_FLUID_CATEGORY_NAME},
+		crafting_categories = {RECIPE_CATEGORY},
 		crafting_speed = 1,
 		energy_source = {
 			type = "electric",

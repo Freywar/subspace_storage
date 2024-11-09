@@ -7,7 +7,7 @@ for k,v in pairs(data.raw.fluid) do
 			{
 				type = "recipe",
 				name = ("get-"..v.name),
-				category = CRAFTING_FLUID_CATEGORY_NAME,
+				category = RECIPE_CATEGORY,
 				energy_required = 1,
 				subgroup = "fill-barrel",
 				order = "b[fill-crude-oil-barrel]",

@@ -12,7 +12,7 @@ local mod_entities = {
 	["subspace-fluid-extractor"] = true,
 	["subspace-electricity-injector"] = true,
 	["subspace-electricity-extractor"] = true,
-	[STORAGE_COMBINATOR_NAME] = true,
+	["subspace-storage-combinator"] = true,
 }
 
 local function absolute(surface, force, position)
@@ -127,24 +127,23 @@ local function entries(storage)
 	end
 end
 
-------------------------
--- [[Thing creation]] --
-------------------------
+-------------------------
+-- [[Entity creation]] --
+-------------------------
 local function RegisterEntity(entity, internal)
 	if not mod_entities[entity.name] then
 		return
 	end
 
-	if entity.name == STORAGE_COMBINATOR_NAME then
-		global.invControls[entity.unit_number] = entity.get_or_create_control_behavior()
+	if entity.name == "subspace-storage-combinator" then
 		entity.operable = false
-	else
-		table.insert(global.entities[entity.name], entity)
 	end
+
+	table.insert(global.entities[entity.name], entity)
 
 	if not internal then
 		local position = relative(entity.surface, entity.force, entity.position)
-		set(global.endpoints_outbox, entity.force.name, position.x, position.y, entity.name, true)
+		update(global.endpoints_outbox, entity.force.name, position.x, position.y, entity.name, function(c) return c + 1 end)
 	end
 end
 
@@ -169,28 +168,24 @@ end
 script.on_event(defines.events.on_built_entity, OnEntityBuilt)
 script.on_event(defines.events.on_robot_built_entity, OnEntityBuilt)
 
------------------------
--- [[Thing removal]] --
------------------------
+------------------------
+-- [[Entity removal]] --
+------------------------
 local function UnregisterEntity(entity, internal)
 	if not mod_entities[entity.name] then
 		return
 	end
 
-	if entity.name == STORAGE_COMBINATOR_NAME then
-		global.invControls[entity.unit_number] = nil
-	else
-		for i, e in ipairs(global.entities[entity.name]) do
-			if e == entity then
-				table.remove(global.entities[entity.name], i)
-				break
-			end
+	for i, e in ipairs(global.entities[entity.name]) do
+		if e == entity then
+			table.remove(global.entities[entity.name], i)
+			break
 		end
 	end
 
 	if not internal then
 		local position = relative(entity.surface, entity.force, entity.position)
-		set(global.endpoints_outbox, entity.force.name, position.x, position.y, entity.name, false)
+		update(global.endpoints_outbox, entity.force.name, position.x, position.y, entity.name, function(c) return c - 1 end)
 	end
 end
 
@@ -216,16 +211,14 @@ local function Load()
 end
 
 local function Init()
-	-- TODO Clean up.
-
 	global.heartbeat_tick = 0
 	global.connected = false
 
 	global.iteration = 0
 	global.tick = 0
 
-	global.endpoints = storage()
-	global.endpoints_outbox = storage()
+	global.endpoints = storage(0)
+	global.endpoints_outbox = storage(0)
 
 	-- TODO It would probably be more optimal to spread the processing by forces and chunks rather than by entity type.
 	global.entities = {
@@ -241,7 +234,6 @@ local function Init()
 	global.own_storage = global.own_storage or storage()
 
 	global.items_outbox = storage(0)
-	global.items_reqbox = storage(0)
 	global.items_inbox = storage(0)
 
 	global.requests = storage()
@@ -250,8 +242,6 @@ local function Init()
 		["subspace-fluid-extractor"] = queue(),
 		["subspace-electricity-extractor"] = queue()
 	}
-
-	global.invControls = {}
 
 	global.zones = {}
 	rendering.clear("subspace_storage")
@@ -299,7 +289,8 @@ script.on_event(defines.events.on_tick, function()
 				ProcessTransfer()
 			end
 			FulfillExtractorsRequests(1 / TICKS_TO_FULFILL_REQUESTS)
-		elseif global.tick == TICKS_TO_COLLECT_REQUESTS + TICKS_TO_FULFILL_REQUESTS then
+		else
+			SendEndpoints()
 			SendTransfer()
 
 			global.iteration = global.iteration + 1
@@ -312,13 +303,13 @@ script.on_event(defines.events.on_tick, function()
 	global.connected = connected
 end)
 
-script.on_nth_tick(TICKS_BEFORE_RETURN, function()
+script.on_nth_tick(TICKS_TO_COLLECT_GARBAGE, function()
 	if settings.global["subspace_storage-infinity-mode"].value then
 		return
 	end
 
 	for force, cx, cy, name, entry in entries(global.own_storage) do
-		if entry.accessed < game.tick - TICKS_BEFORE_RETURN then
+		if entry.accessed < game.tick - TICKS_TO_COLLECT_GARBAGE then
 			update(global.items_outbox, force, cx, cy, name, function(c) return c + entry.count end)
 			set(global.own_storage, force, cx, cy, name, nil)
 		end
@@ -575,8 +566,13 @@ local function FulfillRequest(request, insert)
 		entry = { count = request.count }
 	else
 		entry = get(global.own_storage, request.force, request.cx, request.cy, request.name) or { count = 0 };
+		entry.count = entry.count
+		local outbox_count = get(global.own_storage, request.force, request.cx, request.cy, request.name)
+		if outbox_count > 0 then
+			entry.count = entry.count + outbox_count
+			set(global.own_storage, request.force, request.cx, request.cy, request.name)
+		end
 	end
-	entry.accessed = game.tick
 
 	local available = math.min(entry.count, request.count)
 	local remaining = available
@@ -587,10 +583,9 @@ local function FulfillRequest(request, insert)
 			math.min(math.max(1, math.floor(available * subrequest.count / request.count)), remaining))
 	end
 
-	-- TODO Pull items straight from outbox without a roundtrip.
 	local taken = available - remaining
 	if taken < request.count then
-		update(global.items_reqbox, request.force, request.cx, request.cy, request.name, function(c)
+		update(global.items_outbox, request.force, request.cx, request.cy, request.name, function(c)
 			return c - (request.count - taken)
 		end)
 	end
@@ -600,6 +595,8 @@ local function FulfillRequest(request, insert)
 		end)
 	end
 	set(global.own_storage, request.force, request.cx, request.cy, request.name, nil)
+
+	entry.accessed = game.tick
 end
 
 function FulfillExtractorsRequests(portion)
@@ -617,39 +614,39 @@ function FulfillExtractorsRequests(portion)
 end
 
 function UpdateStorageCombinators()
-	-- Update all inventory Combinators
-	-- Prepare a frame from the last inventory report, plus any virtuals
-	local invframe = {}
 	local instance_id = clusterio_api.get_instance_id()
-	if instance_id then
-		-- Clamp to 32-bit to avoid error raised by Factorio
-		instance_id = math.min(instance_id, 0x7fffffff)
-		instance_id = math.max(instance_id, -0x80000000)
-		table.insert(invframe,
-			{ count = instance_id, index = #invframe + 1, signal = { name = "signal-localid", type = "virtual" } })
-	end
 
-	local items = game.item_prototypes
-	local fluids = game.fluid_prototypes
-	local virtuals = game.virtual_signal_prototypes
-	if global.shared_storage then
-		for name, count in pairs(global.shared_storage) do
-			-- Combinator signals are limited to a max value of 2^31-1
-			count = math.min(count, 0x7fffffff)
-			if items[name] then
-				invframe[#invframe + 1] = { count = count, index = #invframe + 1, signal = { name = name, type = "item" } }
-			elseif fluids[name] then
-				invframe[#invframe + 1] = { count = count, index = #invframe + 1, signal = { name = name, type = "fluid" } }
-			elseif virtuals[name] then
-				invframe[#invframe + 1] = { count = count, index = #invframe + 1, signal = { name = name, type = "virtual" } }
+	for _, entity in global.entities["subspace-storage-combinator"] do
+		if entity.valid then
+			local position = relative(entity.surface, entity.force, entity.position)
+
+			local signals = {}
+			if instance_id then
+				table.insert(signals, {
+					index = #signals + 1,
+					signal = { name = "signal-localid", type = "virtual" },
+					-- Clamp to 32-bit to avoid error raised by Factorio
+					count = math.max(-0x80000000, math.min(instance_id, 0x7fffffff))
+				})
 			end
-		end
-	end
 
-	for i, invControl in pairs(global.invControls) do
-		if invControl.valid then
-			compat.set_parameters(invControl, invframe)
-			invControl.enabled = true
+			for force, cx, cy, name, count in entries(global.shared_storage) do
+				if force == entity.force and position.x == cx and position.y == cy then
+					-- Combinator signals are limited to a max value of 2^31-1
+					count = math.min(count, 0x7fffffff)
+					if game.item_prototypes[name] then
+						table.insert(signals, { index = #signals + 1, signal = { name = name, type = "item" }, count = count })
+					elseif game.fluid_prototypes[name] then
+						table.insert(signals, { index = #signals + 1, signal = { name = name, type = "fluid" }, count = count })
+					elseif game.virtual_signal_prototypes[name] then
+						table.insert(signals, { index = #signals + 1, signal = { name = name, type = "virtual" }, count = count })
+					end
+				end
+			end
+
+			local behavior = entity.get_or_create_control_behavior()
+			compat.set_parameters(behavior, signals)
+			behavior.enabled = true
 		end
 	end
 end
@@ -708,7 +705,7 @@ function UpdateEndpoints(data)
 end
 
 function SendEndpoints()
-	clusterio_api.send_json("subspace_storage:update_endpoints", serialize(global.endpoints_outbox))
+	clusterio_api.send_json("subspace_storage:place_endpoints", serialize(global.endpoints_outbox))
 	global.endpoints_outbox = storage()
 end
 
