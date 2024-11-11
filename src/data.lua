@@ -4,23 +4,21 @@ require("config")
 require("prototypes/entities")
 
 -- Do some magic nice stuffs
-data:extend(
+data:extend {
 	{
-		{
-			type = "item-subgroup",
-			name = "subspace_storage-interactor",
-			group = "logistics",
-			order = "g-subspace_storage", -- After logistic-network
-		},
-	})
+		type = "item-subgroup",
+		name = "subspace_storage-interactor",
+		group = "logistics",
+		order = "g-subspace_storage", -- After logistic-network
+	},
+}
 
-data:extend(
+data:extend {
 	{
-		{
-			type = "recipe-category",
-			name = RECIPE_CATEGORY
-		}
-	})
+		type = "recipe-category",
+		name = RECIPE_CATEGORY
+	}
+}
 
 -- Virtual signals
 data:extend {
@@ -98,16 +96,14 @@ data:extend {
 	},
 }
 
-data:extend(
+data:extend {
 	{
-		{
-			type = "sprite",
-			name = "clusterio",
-			filename = "__subspace_storage__/graphics/icons/clusterio.png",
-			priority = "medium",
-			width = 128,
-			height = 128,
-			flags = { "icon" }
-		}
+		type = "sprite",
+		name = "clusterio",
+		filename = "__subspace_storage__/graphics/icons/clusterio.png",
+		priority = "medium",
+		width = 128,
+		height = 128,
+		flags = { "icon" }
 	}
-)
+}
