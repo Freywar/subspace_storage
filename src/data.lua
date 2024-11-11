@@ -3,26 +3,6 @@ require("config")
 
 require("prototypes/entities")
 
---adds a recipe to a tech and returns true or if that fails returns false
-function AddEntityToTech(techName, name)
-	--can't add the recipe to the tech if it doesn't exist
-	if data.raw["technology"][techName] ~= nil then
-		local effects = data.raw["technology"][techName].effects
-		--if another mod removed the effects or made it nil then make a new table to put the recipe in
-		effects = effects or {}
-		--insert the recipe as an unlock when the research is done
-		effects[#effects + 1] = {
-			type = "unlock-recipe",
-			recipe = name
-		}
-		--if a new table for the effects is made then the effects has to be attached to the
-		-- tech again because the table won't otherwise be owned by the tech
-		data.raw["technology"][techName].effects = effects
-		return true
-	end
-	return false
-end
-
 -- Do some magic nice stuffs
 data:extend(
 	{
