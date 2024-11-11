@@ -80,7 +80,7 @@ data:extend {
 local storage_combinator = table.deepcopy(data.raw["constant-combinator"]["constant-combinator"])
 local tint = { r = 100, g = 200, b = 255, a = 255 }
 storage_combinator.name = "subspace-storage-combinator"
-storage_combinator.minable.result = "subspace-storage-combinator"
+storage_combinator.minable.result = storage_combinator.name
 storage_combinator.item_slot_count = 2000
 for _, sprite in pairs(storage_combinator.sprites) do
 	sprite.layers[1].tint = tint
@@ -90,7 +90,7 @@ data:extend {
 	storage_combinator,
 	{
 		type = "item",
-		name = "subspace-storage-combinator",
+		name = storage_combinator.name,
 		icons = {
 			{
 				icon = storage_combinator.icon,
@@ -100,20 +100,20 @@ data:extend {
 		icon_size = storage_combinator.icon_size,
 		flags = {},
 		subgroup = "subspace_storage-interactor",
-		place_result = "subspace-storage-combinator",
-		order = "c[" .. "subspace-storage-combinator" .. "]",
+		place_result = storage_combinator.name,
+		order = "c[" .. storage_combinator.name .. "]",
 		stack_size = 50,
 	},
 	{
 		type = "recipe",
-		name = "subspace-storage-combinator",
+		name = storage_combinator.name,
 		enabled = true, -- TODO do this on a tech somewhere
 		ingredients =
 		{
 			{ "constant-combinator", 1 },
 			{ "electronic-circuit",  50 }
 		},
-		result = "subspace-storage-combinator",
+		result = storage_combinator.name,
 		requester_paste_multiplier = 1
 	},
 }
