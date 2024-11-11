@@ -112,22 +112,22 @@ function Storage:get(force, cx, cy, name)
 			or self["__default__"]
 end
 
-function Storage:update(self, force, cx, cy, name, f)
+function Storage:update(force, cx, cy, name, f)
 	self:set(force, cx, cy, name, f(self:get(force, cx, cy, name)))
 end
 
 function Storage:serialize()
-	local data = {}
+	local result = {}
 	for force, chunks in pairs(self) do
 		for cx, rows in pairs(chunks) do
 			for cy, items in pairs(rows) do
 				for name, data in pairs(items) do
-					table.insert(data, { force, cx, cy, name, data })
+					table.insert(result, { force, cx, cy, name, data })
 				end
 			end
 		end
 	end
-	return data
+	return result
 end
 
 function Storage:entries()
@@ -606,7 +606,7 @@ function UpdateEndpoints(data)
 end
 
 function SendEndpoints()
-	clusterio_api.send_json("subspace_storage:place_endpoints", global.endpoints_outbox:serialize())
+	clusterio_api.send_json("subspace_storage:endpoints", global.endpoints_outbox:serialize())
 	global.endpoints_outbox = Storage:new()
 end
 
@@ -624,7 +624,7 @@ end
 
 function SendTransfer()
 	if next(global.items_outbox) then
-		clusterio_api.send_json("subspace_storage:transfer_items", global.items_outbox:serialize())
+		clusterio_api.send_json("subspace_storage:items", global.items_outbox:serialize())
 		global.items_outbox = Storage:new(0) -- TODO Confirm items received.
 	end
 
