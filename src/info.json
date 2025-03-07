@@ -2,15 +2,14 @@
     "name": "subspace_storage",
     "variants": [
         {
-            "version": "2.0.0",
-            "factorio_version": "1.1",
-            "additional_files": { "compat.lua": ["compat", "factorio_1.1.lua"] }
+            "version": "2.0.7",
+            "factorio_version": "1.1"
         }
     ],
     "title": "Subspace Storage (Alpha)",
     "author": "Clusterio Team",
-    "homepage": "https://https://github.com/Freywar/subspace_storage",
-    "description": "Allows tranferring items and fluids between worlds via subspace portals. Warning: work in progress alpha.",
+    "homepage": "https://github.com/clusterio/subspace_storage",
+    "description": "Allows transferring items and fluids between Factorio instances using Clusterio subspace. Warning: work in progress alpha.",
     "dependencies": [
         "base",
         "clusterio_lib"

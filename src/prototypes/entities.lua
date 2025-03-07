@@ -1,4 +1,3 @@
-local compat = require("compat")
 local icons = require("entity_icons")
 local pictures = require("entity_pictures")
 
@@ -6,10 +5,11 @@ local pictures = require("entity_pictures")
 -- We copy certain properties from the vanilla steel chest and storage tank
 local steel_chest = data.raw["container"]["steel-chest"]
 local storage_tank = data.raw["storage-tank"]["storage-tank"]
+local accumulator = data.raw["accumulator"]["accumulator"]
 
 -- Circuit connector helpers are defined in lualib/circuit-connector-sprites
 -- but due to the shared lua env for data stage it just exists as a global.
-local connector_definition = { variation = 25, main_offset = {1.875, 1}, shadow_offset = {4.5, 2.5625} }
+local connector_definition = { variation = 25, main_offset = { 1.875, 1 }, shadow_offset = { 4.5, 2.5625 } }
 local interactor_circuit_connector_1_way = circuit_connector_definitions.create(
 	universal_connector_template,
 	{
@@ -27,26 +27,36 @@ local interactor_circuit_connector_4_way = circuit_connector_definitions.create(
 	}
 )
 
+local standard_ingredients = {
+	{ "electronic-circuit", 50 },
+	{ "antimatter",         1 },
+}
 
 local function subspace_interactor_entity(options)
+	for _, v in ipairs(standard_ingredients) do
+		table.insert(options.ingredients, v)
+	end
+
 	local entity = {
 		name = options.name,
 		icon = icons[options.name],
-		icon_size = 64, icon_mipmaps = 4,
-		flags = {"placeable-player", "player-creation"},
+		icon_size = 64,
+		icon_mipmaps = 4,
+		flags = { "placeable-player", "player-creation" },
 		minable = { mining_time = 4, result = options.name },
 		max_health = 500,
 		corpse = nil,
 		dying_explosion = nil,
-		collision_box = {{-3.7, -3.7}, {3.7, 3.7}},
-		selection_box = {{-4, -4}, {4, 4}},
+		collision_box = { { -3.7, -3.7 }, { 3.7, 3.7 } },
+		selection_box = { { -4, -4 }, { 4, 4 } },
 		damaged_trigger_effect = steel_chest.damaged_trigger_effect,
 		resistances = {
-			{ type = "fire", percent = 90 },
+			{ type = "fire",   percent = 90 },
 			{ type = "impact", percent = 60 },
 		},
 		fast_replaceable_group = "subspace-interactor",
 		vehicle_impact_sound = steel_chest.vehicle_impact_sound,
+		picture = pictures[options.name],
 	}
 
 	if options.circuit_connector then
@@ -55,6 +65,7 @@ local function subspace_interactor_entity(options)
 		entity.circuit_connector_sprites = options.circuit_connector.sprites
 		entity.circuit_wire_max_distance = 9
 	end
+
 
 	for key, value in pairs(options.entity_properties) do
 		entity[key] = value
@@ -74,7 +85,7 @@ local function subspace_interactor_entity(options)
 			name = options.name,
 			icon = icons[options.name],
 			icon_size = 64, icon_mipmaps = 4,
-			subgroup = options.subgroup,
+			subgroup = options.subgroup or "subspace-logistics",
 			order = options.order,
 			place_result = options.name,
 			stack_size = options.stack_size or 50,
@@ -83,55 +94,48 @@ local function subspace_interactor_entity(options)
 	}
 end
 
----------------------------------
---[[Make subspace interactors]]--
----------------------------------
-
-local standard_recipe = {
-	{"steel-chest", 1},
-	{"electronic-circuit", 50}
-}
+-----------------------------------
+--[[Make subspace interactors]] --
+-----------------------------------
 
 subspace_interactor_entity {
-	name = "subspace-item-extractor",
-	ingredients = standard_recipe,
-	subgroup = "subspace_storage-interactor",
-	order = "b[extractor]-a[subspace-item-extractor]",
+	name = "subspace-item-injector",
+	order = "a[injector]-a[subspace-item-injector]",
+	ingredients = {
+		{ "steel-chest", 1 }
+	},
 	entity_properties = {
-		type = "logistic-container",
+		type = "container",
 		inventory_size = 60,
-		logistic_mode = "buffer",
-		logistic_slots_count = not compat.version_ge(1, 1) and 18 or nil,
-		render_not_in_network_icon = false,
 		open_sound = steel_chest.open_sound,
-		close_sound = steel_chest.open_sound,
-		animation_sound = nil,
-		opened_duration = logistic_chest_opened_duration,
-		picture = pictures["subspace-item-extractor"],
+		close_sound = steel_chest.close_sound,
 	},
 	circuit_connector = interactor_circuit_connector_1_way,
 }
 
 subspace_interactor_entity {
-	name = "subspace-item-injector",
-	ingredients = standard_recipe,
-	subgroup = "subspace_storage-interactor",
-	order = "a[injector]-a[subspace-item-injector]",
+	name = "subspace-item-extractor",
+	order = "b[extractor]-a[subspace-item-extractor]",
+	ingredients = {
+		{ "steel-chest", 1 }
+	},
 	entity_properties = {
-		type = "container",
+		type = "logistic-container",
 		inventory_size = 60,
+		logistic_mode = "buffer",
+		render_not_in_network_icon = false,
 		open_sound = steel_chest.open_sound,
-		close_sound = steel_chest.open_sound,
-		picture = pictures["subspace-item-injector"],
+		close_sound = steel_chest.close_sound,
 	},
 	circuit_connector = interactor_circuit_connector_1_way,
 }
 
 subspace_interactor_entity {
 	name = "subspace-fluid-injector",
-	ingredients = standard_recipe,
-	subgroup = "subspace_storage-interactor",
 	order = "a[injector]-b[subspace-fluid-injector]",
+	ingredients = {
+		{ "storage-tank", 1 }
+	},
 	entity_properties = {
 		type = "storage-tank",
 		fluid_box = {
@@ -139,17 +143,17 @@ subspace_interactor_entity {
 			base_area = 250,
 			pipe_covers = pipecoverspictures(),
 			pipe_connections = {
-				{ type = "input", position = {-4.5, -2.5} },
-				{ type = "input", position = {-4.5, 2.5} },
-				{ type = "input", position = {-2.5, 4.5} },
-				{ type = "input", position = {2.5, 4.5} },
-				{ type = "input", position = {4.5, 2.5} },
-				{ type = "input", position = {4.5, -2.5} },
-				{ type = "input", position = {2.5, -4.5} },
-				{ type = "input", position = {-2.5, -4.5} },
+				{ type = "input", position = { -4.5, -2.5 } },
+				{ type = "input", position = { -4.5, 2.5 } },
+				{ type = "input", position = { -2.5, 4.5 } },
+				{ type = "input", position = { 2.5, 4.5 } },
+				{ type = "input", position = { 4.5, 2.5 } },
+				{ type = "input", position = { 4.5, -2.5 } },
+				{ type = "input", position = { 2.5, -4.5 } },
+				{ type = "input", position = { -2.5, -4.5 } },
 			},
 		},
-		window_bounding_box = {{-0.125, 0.6875}, {0.1875, 1.1875}},
+		window_bounding_box = { { -0.125, 0.6875 }, { 0.1875, 1.1875 } },
 		pictures = {
 			picture = pictures["subspace-fluid-injector"],
 			window_background = storage_tank.pictures.window_background,
@@ -161,16 +165,16 @@ subspace_interactor_entity {
 		working_sound = storage_tank.working_sound,
 		open_sound = storage_tank.open_sound,
 		close_sound = storage_tank.close_sound,
-		water_reflection = nil,
 	},
 	circuit_connector = interactor_circuit_connector_4_way,
 }
 
 subspace_interactor_entity {
 	name = "subspace-fluid-extractor",
-	ingredients = standard_recipe,
-	subgroup = "subspace_storage-interactor",
 	order = "b[extractor]-b[subspace-fluid-extractor]",
+	ingredients = {
+		{ "storage-tank", 1 }
+	},
 	entity_properties = {
 		type = "assembling-machine",
 		fluid_boxes = {
@@ -180,23 +184,22 @@ subspace_interactor_entity {
 				base_area = 250,
 				base_level = 1,
 				pipe_connections = {
-					{ type = "output", position = {-4.5, -2.5} },
-					{ type = "output", position = {-4.5, 2.5} },
-					{ type = "output", position = {-2.5, 4.5} },
-					{ type = "output", position = {2.5, 4.5} },
-					{ type = "output", position = {4.5, 2.5} },
-					{ type = "output", position = {4.5, -2.5} },
-					{ type = "output", position = {2.5, -4.5} },
-					{ type = "output", position = {-2.5, -4.5} },
+					{ type = "output", position = { -4.5, -2.5 } },
+					{ type = "output", position = { -4.5, 2.5 } },
+					{ type = "output", position = { -2.5, 4.5 } },
+					{ type = "output", position = { 2.5, 4.5 } },
+					{ type = "output", position = { 4.5, 2.5 } },
+					{ type = "output", position = { 4.5, -2.5 } },
+					{ type = "output", position = { 2.5, -4.5 } },
+					{ type = "output", position = { -2.5, -4.5 } },
 				},
 			},
 			off_when_no_fluid_recipe = false,
 		},
-		working_sound = nil,
 		open_sound = storage_tank.open_sound,
 		close_sound = storage_tank.close_sound,
 		animation = pictures["subspace-fluid-extractor"],
-		crafting_categories = {RECIPE_CATEGORY},
+		crafting_categories = { "subspace-extraction" },
 		crafting_speed = 1,
 		energy_source = {
 			type = "electric",
@@ -213,13 +216,10 @@ subspace_interactor_entity {
 subspace_interactor_entity {
 	name = "subspace-electricity-injector",
 	ingredients = {
-		{"accumulator", 2000},
-		{"advanced-circuit", 50},
-		{"substation", 50},
-		{"satellite", 1}
+		{ "substation",  1 },
+		{ "accumulator", 2000 },
 	},
 	requester_paste_multiplier = 1,
-	subgroup = "subspace_storage-interactor",
 	order = "a[injector]-c[subspace-electricity-injector]",
 	stack_size = 5,
 	entity_properties = {
@@ -231,18 +231,11 @@ subspace_interactor_entity {
 			input_flow_limit = "1GW",
 			output_flow_limit = "0kW"
 		},
-		picture = pictures["subspace-electricity-injector"],
-		charge_animation = nil,
-		water_reflection = nil,
 		charge_cooldown = 30,
-		charge_light = nil,
-		discharge_animation = nil,
 		discharge_cooldown = 60,
-		discharge_light = nil,
-		open_sound = storage_tank.open_sound,
-		close_sound = storage_tank.close_sound,
-		working_sound = nil,
-		default_output_signal = {type = "virtual", name = "signal-A"},
+		open_sound = accumulator.open_sound,
+		close_sound = accumulator.close_sound,
+		default_output_signal = { type = "virtual", name = "signal-E" },
 	},
 	circuit_connector = interactor_circuit_connector_1_way,
 }
@@ -250,13 +243,11 @@ subspace_interactor_entity {
 subspace_interactor_entity {
 	name = "subspace-electricity-extractor",
 	ingredients = {
-		{"accumulator", 2000},
-		{"advanced-circuit", 50},
-		{"substation", 50},
-		{"satellite", 1}
+		{ "substation",  1 },
+		{ "accumulator", 2000 },
 	},
 	requester_paste_multiplier = 1,
-	subgroup = "subspace_storage-interactor",
+	subgroup = "subspace-logistics",
 	order = "b[extractor]-c[subspace-electricity-extractor]",
 	stack_size = 5,
 	entity_properties = {
@@ -268,17 +259,11 @@ subspace_interactor_entity {
 			input_flow_limit = "0kW",
 			output_flow_limit = "1GW"
 		},
-		picture = pictures["subspace-electricity-extractor"],
-		charge_animation = nil,
-		water_reflection = nil,
 		charge_cooldown = 30,
-		charge_light = nil,
-		discharge_animation = nil,
 		discharge_cooldown = 60,
-		discharge_light = nil,
-		open_sound = storage_tank.open_sound,
-		close_sound = storage_tank.close_sound,
-		working_sound = nil,
-		default_output_signal = {type = "virtual", name = "signal-A"},
+		open_sound = accumulator.open_sound,
+		close_sound = accumulator.close_sound,
+		default_output_signal = { type = "virtual", name = "signal-E" },
 	},
+	circuit_connector = interactor_circuit_connector_1_way,
 }

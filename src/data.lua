@@ -3,25 +3,33 @@ require("config")
 
 require("prototypes/entities")
 
--- Do some magic nice stuffs
+local tint = { r = 100, g = 200, b = 255, a = 255 }
+
 data:extend {
 	{
+		type = "sprite",
+		name = "clusterio",
+		filename = "__subspace_storage__/graphics/icons/clusterio.png",
+		priority = "medium",
+		width = 128,
+		height = 128,
+		flags = { "icon" }
+	},
+	-- Subgroup for new subspace interactors recipes
+	{
 		type = "item-subgroup",
-		name = "subspace_storage-interactor",
+		name = "subspace-logistics",
 		group = "logistics",
 		order = "g-subspace_storage", -- After logistic-network
 	},
-}
 
-data:extend {
+	-- "Extract fluid" recipe category, in order to simulate non-existent "fluid requests" via recipe selection
 	{
 		type = "recipe-category",
-		name = RECIPE_CATEGORY
-	}
-}
+		name = "subspace-extraction"
+	},
 
--- Virtual signals
-data:extend {
+	-- Virtual signals
 	{
 		type = "item-subgroup",
 		name = "virtual-signal-clusterio",
@@ -38,72 +46,83 @@ data:extend {
 	},
 	{
 		type = "virtual-signal",
-		name = "signal-unixtime",
-		icon = "__subspace_storage__/graphics/icons/signal_unixtime.png",
-		icon_size = 32,
-		subgroup = "virtual-signal-clusterio",
-		order = "e[clusterio]-[5unixtime]"
-	},
-	{
-		type = "virtual-signal",
 		name = "electricity",
 		icon = "__subspace_storage__/graphics/icons/signal_electricity.png",
 		icon_size = 32,
 		subgroup = "virtual-signal-clusterio",
 		order = "e[clusterio]-[5electricity]"
 	},
-}
-
--- Inventory Combinator
-local storage_combinator = table.deepcopy(data.raw["constant-combinator"]["constant-combinator"])
-local tint = { r = 100, g = 200, b = 255, a = 255 }
-storage_combinator.name = "subspace-storage-combinator"
-storage_combinator.minable.result = storage_combinator.name
-storage_combinator.item_slot_count = 2000
-for _, sprite in pairs(storage_combinator.sprites) do
-	sprite.layers[1].tint = tint
-	sprite.layers[1].hr_version.tint = tint
-end
-data:extend {
-	storage_combinator,
+	-- Intermediate resources
 	{
 		type = "item",
-		name = storage_combinator.name,
+		name = "antimatter",
 		icons = {
 			{
-				icon = storage_combinator.icon,
-				tint = tint,
+				icon = data.raw["item"]["uranium-238"].icon,
+				tint = { r = 150, g = 0, b = 150, a = 150 },
 			}
 		},
-		icon_size = storage_combinator.icon_size,
+		icon_size = data.raw["item"]["uranium-238"].icon_size,
 		flags = {},
-		subgroup = "subspace_storage-interactor",
-		place_result = storage_combinator.name,
-		order = "c[" .. storage_combinator.name .. "]",
-		stack_size = 50,
+		subgroup = data.raw["item"]["uranium-238"].subgroup,
+		order = "b[uranium-products]-d[antimatter]", -- After Kovarex
+		stack_size = 1,
 	},
 	{
 		type = "recipe",
-		name = storage_combinator.name,
+		name = "antimatter",
 		enabled = true, -- TODO do this on a tech somewhere
+		category = "centrifuging",
 		ingredients =
 		{
-			{ "constant-combinator", 1 },
-			{ "electronic-circuit",  50 }
+			{ "uranium-238", 40 },
+			{ "raw-fish",    1 }
 		},
-		result = storage_combinator.name,
+		energy_required = 60,
+		emissions_multiplier = 100,
+		result = "antimatter",
 		requester_paste_multiplier = 1
 	},
 }
 
+-- Inventory Combinator
+local combinator = table.deepcopy(data.raw["constant-combinator"]["constant-combinator"])
+combinator.name = "subspace-inventory-combinator"
+combinator.minable.result = "subspace-inventory-combinator"
+combinator.item_slot_count = 2000
+for _, sprite in pairs(combinator.sprites) do
+	sprite.layers[1].tint = tint
+	sprite.layers[1].hr_version.tint = tint
+end
 data:extend {
+	combinator,
 	{
-		type = "sprite",
-		name = "clusterio",
-		filename = "__subspace_storage__/graphics/icons/clusterio.png",
-		priority = "medium",
-		width = 128,
-		height = 128,
-		flags = { "icon" }
-	}
+		type = "item",
+		name = "subspace-inventory-combinator",
+		icons = {
+			{
+				icon = combinator.icon,
+				tint = tint,
+			}
+		},
+		icon_size = combinator.icon_size,
+		flags = {},
+		subgroup = "subspace-logistics",
+		place_result = "subspace-inventory-combinator",
+		order = "c[subspace-inventory-combinator]",
+		stack_size = 50,
+	},
+	{
+		type = "recipe",
+		name = "subspace-inventory-combinator",
+		enabled = true, -- TODO do this on a tech somewhere
+		ingredients =
+		{
+			{ "constant-combinator", 1 },
+			{ "electronic-circuit",  50 },
+			{ "antimatter",          1 },
+		},
+		result = "subspace-inventory-combinator",
+		requester_paste_multiplier = 1
+	},
 }
